@@ -1,0 +1,51 @@
+# Runtime identities, chain state and local settings
+.local/
+.testnets/
+data/
+keyring-*/
+**/node_key.json
+**/priv_validator_key.json
+**/priv_validator_state.json
+**/keyvault.json
+**/.env
+**/.env.*
+!**/.env.example
+**/deploy.env
+**/*.pem
+**/id_rsa*
+**/id_ed25519*
+
+# Build outputs and dependency caches
+build/
+**/node_modules/
+**/artifacts/
+**/cache/
+**/__pycache__/
+**/*.pyc
+.cache/
+.npm/
+.gocache/
+
+# Generated deployment records and private operator input
+reports/
+filetrust/evm/deployed_addresses.json
+filetrust/evm/deployment_manifest.json
+filetrust/evm/network_config_bundle.json
+filetrust/evm/cutover_barrier_state.json
+filetrust/evm/operator*.env
+filetrust/evm/keys/
+
+# Logs, archives and editor backups
+*.log
+*.jsonl
+*.log.gz
+*.jsonl.gz
+*.zip
+*.tar
+*.tar.gz
+*.part
+*.bak
+*.bak.*
+.DS_Store
+.idea/
+.vscode/

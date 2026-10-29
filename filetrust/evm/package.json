@@ -1,0 +1,22 @@
+{
+  "name": "FileTrust",
+  "version": "1.0.0",
+  "license": "FSL-1.1-ALv2",
+  "type": "module",
+  "scripts": {
+    "compile": "hardhat compile",
+    "check:sizes": "node scripts/check_contract_sizes.js",
+    "deploy": "hardhat run scripts/deploy_filetrust.js --network filetrustLocal",
+    "manifest": "hardhat run scripts/generate_deployment_manifest.js --network filetrustLocal",
+    "handover": "hardhat run scripts/accept_governance_handover.js --network filetrustLocal"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-ethers": "^4.0.3",
+    "@types/node": "^22.19.1",
+    "hardhat": "^3.0.15",
+    "typescript": "~5.8.0"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "5.7.0"
+  }
+}

@@ -1,0 +1,25 @@
+title = "FileTrust publication rules"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "filetrust-wallet-key"
+description = "Literal wallet or signing key assignment"
+regex = '''(?i)(?:private[_-]?key|signing[_-]?key|operational[_-]?key)[\s"']{0,4}[:=][\s"'`]{0,4}((?:0x)?[a-f0-9]{64})'''
+secretGroup = 1
+keywords = ["private", "signing", "operational"]
+
+[[allowlists]]
+description = "Upstream public algorithm name, not a credential"
+condition = "AND"
+paths = ['''(^|/)crypto/ethsecp256k1/ethsecp256k1\.go$''']
+regexTarget = "line"
+regexes = ['''^\s*KeyType = "eth_secp256k1"\s*$''']
+
+[[allowlists]]
+description = "Upstream Solidity contract declaration, not a credential"
+condition = "AND"
+paths = ['''(^|/)contracts/solidity/ERC20WithNativeTransfers\.sol$''']
+regexTarget = "line"
+regexes = ['''^contract ERC20WithNativeTransfers is Context, AccessControlEnumerable, ERC20Burnable \{$''']
