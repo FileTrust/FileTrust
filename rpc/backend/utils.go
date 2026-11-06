@@ -48,8 +48,8 @@ func (s sortGasAndReward) Less(i, j int) bool {
 }
 
 // getAccountNonce returns the account nonce for the given account address.
-// If the pending value is true, it will iterate over the mempool (pending)
-// txs in order to compute and return the pending tx sequence.
+// Pending queries include executable transactions in the application EVM pool,
+// which receives SendRawTransaction directly rather than through CometBFT.
 // Todo: include the ability to specify a blockNumber
 func (b *Backend) getAccountNonce(ctx context.Context, accAddr common.Address, pending bool, height int64, logger log.Logger) (_ uint64, err error) {
 	ctx, span := tracer.Start(ctx, "getAccountNonce")
@@ -77,43 +77,15 @@ func (b *Backend) getAccountNonce(ctx context.Context, accAddr common.Address, p
 		return nonce, nil
 	}
 
-	// eip2681 - tx with nonce >= 2^64 is invalid; saturate at 2^64-1
-	// if already at max nonce, don't add to pending
-	if nonce == math.MaxUint64 {
-		return nonce, nil
+	if b.Mempool == nil || b.Mempool.GetTxPool() == nil {
+		return 0, fmt.Errorf("pending Ethereum transaction pool is unavailable")
 	}
-
-	// the account retriever doesn't include the uncommitted transactions on the nonce so we need to
-	// to manually add them.
-	pendingTxs, err := b.PendingTransactions(ctx)
-	if err != nil {
-		logger.Error("failed to fetch pending transactions", "error", err.Error())
-		return nonce, nil
+	// PoolNonce includes only the contiguous executable prefix, not queued gaps.
+	// Its head may briefly lag the account query during a reset, so never return
+	// less than the confirmed sequence. Do not use TxPool.Nonce (confirmed only).
+	if next := b.Mempool.GetTxPool().PoolNonce(accAddr); next > nonce {
+		nonce = next
 	}
-
-	// add the uncommitted txs to the nonce counter
-	// only supports `MsgEthereumTx` style tx
-	for _, tx := range pendingTxs {
-		for _, msg := range (*tx).GetMsgs() {
-			ethMsg, ok := msg.(*evmtypes.MsgEthereumTx)
-			if !ok {
-				// not ethereum tx
-				break
-			}
-
-			sender, err := ethMsg.GetSenderLegacy(ethtypes.LatestSignerForChainID(b.EvmChainID))
-			if err != nil {
-				continue
-			}
-			if sender == accAddr {
-				// saturate - never overflow beyond 2^64-1 when counting pending txs
-				if nonce < math.MaxUint64 {
-					nonce++
-				}
-			}
-		}
-	}
-
 	return nonce, nil
 }
 
