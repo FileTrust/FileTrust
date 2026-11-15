@@ -89,6 +89,12 @@ interface IZkDkgCoordinatorV2_TElGv2 {
         uint32 shareVersion,
         uint8 shareIndex
     ) external view returns (bool exists, uint256 x, uint256 y);
+    function getV2SharePublicKeyFull(
+        bytes32 fileId,
+        uint32 keyEpoch,
+        uint32 shareVersion,
+        uint8 shareIndex
+    ) external view returns (bool exists, address guardian, uint8 storedShareIndex, uint256 x, uint256 y);
 }
 
 interface IZkDkgDisputeManager_TElGv2 {
@@ -225,6 +231,8 @@ contract TElGv2 {
         uint8 participantCount;
         uint256 shareX;
         uint256 shareY;
+        address shareGuardian;
+        uint8 storedShareIndex;
         uint256[] requestIndices;
         uint256 batchId;
         uint256 pkReqX;
@@ -406,6 +414,8 @@ contract TElGv2 {
         require(!_shareIndexUsed[requestId][shareIndex], "TElGv2: duplicate share index");
         require(batch.cidIndices.length == ctx.requestIndices.length, "TElGv2: incomplete partial");
         require(shareIndex <= ctx.participantCount, "TElGv2: bad share index");
+        require(ctx.shareGuardian == msg.sender && ctx.storedShareIndex == shareIndex,
+            "TElGv2: share owner mismatch");
         (bool batchC1Exists, , ) = dataVault.getV2BatchC1(ctx.batchId);
         require(!batchC1Exists, "TElGv2: use batch partial");
         require(
@@ -484,6 +494,8 @@ contract TElGv2 {
         require(!_partials[requestId][msg.sender].exists, "TElGv2: duplicate guardian");
         require(!_shareIndexUsed[requestId][shareIndex], "TElGv2: duplicate share index");
         require(shareIndex <= ctx.participantCount, "TElGv2: bad share index");
+        require(ctx.shareGuardian == msg.sender && ctx.storedShareIndex == shareIndex,
+            "TElGv2: share owner mismatch");
         require(
             !disputeManager.isDealerExcluded(ctx.fileId, ctx.keyEpoch, ctx.shareVersion, false, shareIndex),
             "TElGv2: excluded guardian"
@@ -641,8 +653,8 @@ contract TElGv2 {
         require(ctx.keyEpoch == keyEpochV2, "TElGv2: wrong epoch");
 
         bool sharePkExists;
-        (sharePkExists, ctx.shareX, ctx.shareY) =
-            coordinator.getV2SharePublicKey(ctx.fileId, ctx.keyEpoch, ctx.shareVersion, shareIndex);
+        (sharePkExists, ctx.shareGuardian, ctx.storedShareIndex, ctx.shareX, ctx.shareY) =
+            coordinator.getV2SharePublicKeyFull(ctx.fileId, ctx.keyEpoch, ctx.shareVersion, shareIndex);
         require(sharePkExists, "TElGv2: missing share public key");
     }
 

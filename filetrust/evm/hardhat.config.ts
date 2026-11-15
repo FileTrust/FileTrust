@@ -1,29 +1,13 @@
 import { defineConfig } from "hardhat/config";
 import hardhatEthers from "@nomicfoundation/hardhat-ethers";
+import hardhatNodeTestRunner from "@nomicfoundation/hardhat-node-test-runner";
+import { SOLIDITY_COMPILER } from "./scripts/lib/compiler_policy.js";
+import stableSimulation from "./scripts/testing/stable_simulation.js";
 
 export default defineConfig({
-  plugins: [hardhatEthers],
+  plugins: [hardhatEthers, hardhatNodeTestRunner, stableSimulation],
 
-  solidity: {
-    version: "0.8.37",
-    settings: {
-      // The chain's newest enabled fork, named rather than left to the
-      // compiler. solc 0.8.37 targets osaka by default, and this chain has
-      // osaka switched off (x/vm/types/chain_config.go: OsakaTime is nil,
-      // PragueTime is 0). Bytecode built for a fork the chain does not run
-      // can reach for an opcode that does not exist there, and the failure
-      // shows up as a deployment or a call that reverts with nothing to say.
-      evmVersion: "prague",
-      optimizer: {
-        enabled: true,
-        // StorageProof is a feature-dense protocol contract. A lower run count
-        // keeps deployed bytecode below EIP-170 while retaining the optimizer;
-        // proof verification gas is dominated by the verifier precompiles.
-        runs: 1,
-      },
-      viaIR: true,
-    },
-  },
+  solidity: SOLIDITY_COMPILER,
 
   paths: {
     sources: "contracts",
@@ -33,9 +17,13 @@ export default defineConfig({
   },
 
   networks: {
-    // Isolated simulated EVM for local development.
+    // Simulated EVM used by the protocol test suite. It must stay identical to the
+    // Blockchain workspace so a contract change is validated the same way in both.
     node: {
       type: "edr-simulated",
+      // Match the approved chain/compiler target instead of following EDR's
+      // moving "latest hardfork" default (currently Osaka).
+      hardfork: "prague",
       allowBlocksWithSameTimestamp: true,
       // Portable checkpoint replay starts a fresh EVM at the captured genesis timestamp.
       // Normal runs remain wall-clock based when the opt-in variable is absent.

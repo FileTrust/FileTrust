@@ -40,6 +40,35 @@ interface IFileRegistrationSC_Escrow {
         external view returns (uint64);
 }
 
+interface IRegistrationEvidence_VKE {
+    function registrationCommitmentToCommitmentHash(bytes32 rc) external view returns (bytes32);
+    function fileRecords(bytes32 ch) external view returns (
+        bytes32 root, bytes32 piece, address vk, uint8 deadline, uint8 partition,
+        uint64 serviceEnd, uint64 registeredAt, bool linked, bytes32 deletionAuth
+    );
+    function expiredRegistrationCommitments(bytes32 rc) external view returns (bool);
+    function expiredCommitmentHashes(bytes32 ch) external view returns (bool);
+    function isDeletionConfirmed(bytes32 ch) external view returns (bool);
+    function trustedStorageProofSC() external view returns (address);
+    function partitionSnapshotProof() external view returns (address);
+}
+
+interface IStorageEvidence_VKE {
+    function partitionKeyOf(address vk, uint8 deadline, uint8 partition) external view returns (bytes32);
+    function getPartitionSectorRoots(bytes32 key) external view returns (bytes32[] memory);
+    function getPartitionPieceCommitments(bytes32 key) external view returns (bytes32[] memory);
+}
+
+interface ISnapshotEvidence_VKE {
+    function getCurrentPartitionProofStatus(bytes32 key) external view returns (
+        bool current, uint64 version, bytes32 hash, uint64 round, uint64 acceptedAt
+    );
+    function acceptedVersionReceipts(bytes32 key, uint64 version) external view returns (
+        uint64 authority, uint64 contentVersion, uint64 round, uint64 acceptedAt,
+        bytes32 contentHash, uint64 nonce, bool acceptedAsCurrent
+    );
+}
+
 /// @dev Interface used by claimEscrowOnDeletion to resolve deletion confirmation
 ///      time for pro-rata payment calculation.
 interface IFileRegistrationSC_DeletionEscrow {
@@ -117,6 +146,36 @@ interface IRewardManager_VKE {
 ///   which immediately returns totalAmount to depositor (DO). VK stake compensation is handled
 ///   separately by StakingManager.slashTo(vk, amount, doAddress).
 contract VKEscrow is FileTrustDeprecatable {
+    error InvalidStorageEvidence();
+
+    struct RegistrationEvidence {
+        bytes32 root;
+        bytes32 piece;
+        address vk;
+        uint8 deadline;
+        uint8 partition;
+        bool linked;
+    }
+
+    struct HistoricalManifest {
+        uint8 deadline;
+        uint8 partition;
+        uint8 kind;
+        bytes32[] sectorIds;
+        bytes32[] sectorRoots;
+        uint32[] sectorBlockCounts;
+        bytes32[] pieceCommitments;
+        uint64 committedBytes;
+        uint64 expiration;
+        uint16 challengeCount;
+        uint64 contentVersion;
+    }
+
+    struct SettlementEvidence {
+        address vk;
+        uint64 acceptedAt;
+        bool historical;
+    }
 
     // ─── Structs ─────────────────────────────────────────────────────────────
 
@@ -787,6 +846,84 @@ contract VKEscrow is FileTrustDeprecatable {
         bytes32 regSecret,
         bytes32 linkNonce
     ) external {
+        SettlementEvidence memory evidence;
+        _claimEscrow(nullifier, secret, regNullifier, regSecret, linkNonce, evidence);
+    }
+
+    function claimEscrowWithHistoricalProof(
+        bytes32 nullifier,
+        bytes32 secret,
+        bytes32 regNullifier,
+        bytes32 regSecret,
+        bytes32 linkNonce,
+        HistoricalManifest calldata manifest
+    ) external {
+        bytes32 rc = keccak256(abi.encodePacked(regNullifier, regSecret));
+        RegistrationEvidence memory r = _registrationEvidence(rc);
+        IRegistrationEvidence_VKE fr = IRegistrationEvidence_VKE(address(fileRegistration));
+        bytes32 key = IStorageEvidence_VKE(fr.trustedStorageProofSC()).partitionKeyOf(
+            r.vk, manifest.deadline, manifest.partition
+        );
+        (uint64 authority, uint64 version,, uint64 acceptedAt, bytes32 hash, uint64 nonce,) =
+            ISnapshotEvidence_VKE(fr.partitionSnapshotProof()).acceptedVersionReceipts(
+                key, manifest.contentVersion
+            );
+        if (authority == 0 || nonce == 0 || acceptedAt == 0 || version != manifest.contentVersion ||
+            manifest.kind != 1 || hash != keccak256(abi.encode(
+                manifest.deadline, manifest.partition, manifest.kind, manifest.sectorIds,
+                manifest.sectorRoots, manifest.sectorBlockCounts, manifest.pieceCommitments,
+                manifest.committedBytes, manifest.expiration, manifest.challengeCount
+            ))) revert InvalidStorageEvidence();
+        uint256 k = manifest.sectorRoots.length;
+        if (k == 0 || k > type(uint8).max || manifest.sectorIds.length != k ||
+            manifest.sectorBlockCounts.length != k || manifest.pieceCommitments.length != k ||
+            !_containsPair(r, manifest.sectorRoots, manifest.pieceCommitments)) {
+            revert InvalidStorageEvidence();
+        }
+        _claimEscrow(nullifier, secret, regNullifier, regSecret, linkNonce,
+            SettlementEvidence(r.vk, acceptedAt, true));
+    }
+
+    function _registrationEvidence(bytes32 rc) private view returns (RegistrationEvidence memory r) {
+        IRegistrationEvidence_VKE fr = IRegistrationEvidence_VKE(address(fileRegistration));
+        bytes32 ch = fr.registrationCommitmentToCommitmentHash(rc);
+        if (ch == bytes32(0) || fr.expiredRegistrationCommitments(rc) ||
+            fr.expiredCommitmentHashes(ch) || fr.isDeletionConfirmed(ch)) revert InvalidStorageEvidence();
+        (r.root, r.piece, r.vk, r.deadline, r.partition,,, r.linked,) = fr.fileRecords(ch);
+        if (r.vk == address(0)) revert InvalidStorageEvidence();
+    }
+
+    function _containsPair(RegistrationEvidence memory r, bytes32[] memory roots, bytes32[] memory pieces)
+        private pure returns (bool)
+    {
+        if (roots.length != pieces.length) return false;
+        for (uint256 i; i < roots.length; ++i) {
+            if (roots[i] == r.root && pieces[i] == r.piece) return true;
+        }
+        return false;
+    }
+
+    function _currentEvidence(bytes32 rc) private view returns (address vk, bool current, uint64 acceptedAt) {
+        RegistrationEvidence memory r = _registrationEvidence(rc);
+        IRegistrationEvidence_VKE fr = IRegistrationEvidence_VKE(address(fileRegistration));
+        IStorageEvidence_VKE storageProof = IStorageEvidence_VKE(fr.trustedStorageProofSC());
+        bytes32 key = storageProof.partitionKeyOf(r.vk, r.deadline, r.partition);
+        (current,,,, acceptedAt) = ISnapshotEvidence_VKE(fr.partitionSnapshotProof())
+            .getCurrentPartitionProofStatus(key);
+        current = current && r.linked && _containsPair(r,
+            storageProof.getPartitionSectorRoots(key), storageProof.getPartitionPieceCommitments(key));
+        return (r.vk, current, acceptedAt);
+    }
+
+    function _claimEscrow(
+        bytes32 nullifier,
+        bytes32 secret,
+        bytes32 regNullifier,
+        bytes32 regSecret,
+        bytes32 linkNonce,
+        SettlementEvidence memory evidence
+    ) private {
+        require(address(fileRegistration) != address(0), "VKEscrow: registration not configured");
         bytes32 paymentCommitment = keccak256(abi.encodePacked(nullifier, secret));
         EscrowRecord storage rec  = escrows[paymentCommitment];
 
@@ -810,10 +947,12 @@ contract VKEscrow is FileTrustDeprecatable {
                 fileRegistration.registrationCommitmentExists(registrationCommitment),
                 "VKEscrow: no file registration found"
             );
-            (address registeredVK, bool proofCurrent, uint64 acceptedAt) =
-                fileRegistration.registrationCurrentProofStatus(
-                    registrationCommitment
-                );
+            address registeredVK = evidence.vk;
+            bool proofCurrent = evidence.historical;
+            uint64 acceptedAt = evidence.acceptedAt;
+            if (!evidence.historical) {
+                (registeredVK, proofCurrent, acceptedAt) = _currentEvidence(registrationCommitment);
+            }
             require(registeredVK == msg.sender, "VKEscrow: caller is not registered VK");
             require(
                 proofCurrent && acceptedAt >= rec.serviceEnd,

@@ -1,20 +1,46 @@
 // Read back the initialized modern protocol before publishing its deployment records.
 import fs from 'node:fs';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { REGISTERED_CONTRACTS, findArtifact } from './phase2_infrastructure.js';
+import { SOLIDITY_COMPILER, SOLIDITY_LONG_VERSION } from './compiler_policy.js';
 
 export function requireCanonicalDeploymentArtifacts(workspace, canonicalWorkspace) {
   if (fs.realpathSync(workspace) !== fs.realpathSync(canonicalWorkspace)) {
-    throw new Error('Run the canonical deployment from its filetrust/evm workspace');
+    throw new Error('Run the canonical deployment from its Blockchain 2/filetrust/evm workspace');
   }
-  for (const name of new Set(Object.values(REGISTERED_CONTRACTS))) {
-    const artifact = findArtifact(path.join(workspace, 'artifacts', 'contracts'), name);
-    const build = JSON.parse(fs.readFileSync(path.join(workspace, 'artifacts', 'build-info', `${artifact.buildInfoId}.json`)));
-    if (build.input.sources[artifact.inputSourceName]?.content !==
-        fs.readFileSync(path.join(workspace, artifact.sourceName), 'utf8')) {
-      throw new Error(`Stale deployment artifact: ${name}; compile the canonical EVM sources`);
+  const contractsRoot = path.join(workspace, 'artifacts', 'contracts');
+  // Required records must still exist even if the artifact directory is partial.
+  for (const name of new Set(Object.values(REGISTERED_CONTRACTS))) findArtifact(contractsRoot, name);
+  const checkedBuilds = new Map();
+  function checkDirectory(dir) {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const file = path.join(dir, entry.name);
+      if (entry.isDirectory()) { checkDirectory(file); continue; }
+      if (!entry.name.endsWith('.json') || entry.name.endsWith('.dbg.json')) continue;
+      const artifact = JSON.parse(fs.readFileSync(file));
+      if (!artifact.contractName || !artifact.bytecode || artifact.bytecode === '0x' ||
+          artifact.sourceName.includes('/test/') || /Mock/.test(artifact.sourceName)) continue;
+      let build = checkedBuilds.get(artifact.buildInfoId);
+      if (!build) {
+        build = JSON.parse(fs.readFileSync(path.join(workspace, 'artifacts', 'build-info', `${artifact.buildInfoId}.json`)));
+        const settings = build.input?.settings;
+        if (build.compilerType !== 'solc' || build.solcVersion !== SOLIDITY_COMPILER.version ||
+            build.solcLongVersion !== SOLIDITY_LONG_VERSION ||
+            settings?.evmVersion !== SOLIDITY_COMPILER.settings.evmVersion ||
+            settings?.viaIR !== SOLIDITY_COMPILER.settings.viaIR ||
+            !isDeepStrictEqual(settings?.optimizer, SOLIDITY_COMPILER.settings.optimizer)) {
+          throw new Error(`Unapproved compiler artifacts: ${artifact.contractName}; compile the canonical EVM sources`);
+        }
+        checkedBuilds.set(artifact.buildInfoId, build);
+      }
+      if (build.input.sources[artifact.inputSourceName]?.content !==
+          fs.readFileSync(path.join(workspace, artifact.sourceName), 'utf8')) {
+        throw new Error(`Stale deployment artifact: ${artifact.contractName}; compile the canonical EVM sources`);
+      }
     }
   }
+  checkDirectory(contractsRoot);
 }
 
 export const DEPLOYMENT_BINDINGS = {

@@ -220,6 +220,7 @@ contract PartitionSnapshotProofSC {
     mapping(bytes32 => ProofReceipt) public lastProofReceipts;
     mapping(bytes32 => ProofReceipt) public currentProofReceipts;
 
+
     /// @notice Monotonic freeze-generation counter per partition key. Deliberately kept
     ///         SEPARATE from the deletable FrozenSnapshot record: it increments on every
     ///         capture and every reanchor and is never reset or deleted, so a slot that
@@ -228,6 +229,10 @@ contract PartitionSnapshotProofSC {
     ///         always the current counter value; nonce 0 never identifies a submittable
     ///         snapshot.
     mapping(bytes32 => uint64) public partitionFrozenSnapshotNonce;
+
+    // Settlement evidence survives replacement of the live partition identity.
+    // Replays take the early-return branch and cannot refresh this timestamp.
+    mapping(bytes32 => mapping(uint64 => ProofReceipt)) public acceptedVersionReceipts;
 
     event VaultKeeperRegistrySet(address indexed registry);
     event PartitionVerifierSet(address indexed verifier);
@@ -697,6 +702,7 @@ contract PartitionSnapshotProofSC {
         if (acceptedAsCurrent) {
             currentProofReceipts[pKey] = lastProofReceipts[pKey];
         }
+        acceptedVersionReceipts[pKey][contentVersion] = lastProofReceipts[pKey];
         delete frozenSnapshots[pKey];
         emit FrozenPartitionProofSubmitted(
             pKey, vk, contentVersion, proofEpochId, round, contentHash, acceptedAsCurrent
