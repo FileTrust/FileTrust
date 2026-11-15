@@ -748,7 +748,9 @@ contract StorageReceiptDispute {
             return;
         }
 
-        _resolveByPartitionStatus(disputeId, vk, sectorRoot, deadlineIndex, partitionIndex);
+        (DisputeStatus status, string memory reason) =
+            _partitionDisputeOutcome(vk, sectorRoot, deadlineIndex, partitionIndex);
+        _resolve(disputeId, status, reason);
     }
 
     /// @dev What a storage dispute may judge. The receipt's VK must be a registered
@@ -832,8 +834,9 @@ contract StorageReceiptDispute {
         emit DisputedEscrowSettled(disputeId, paymentCommitment, depositor, comp);
     }
 
-    /// @dev Encapsulates W7+W9-aware partition status resolution, keeping submitDispute
-    ///      below the EVM stack limit.
+    /// @dev Evaluate W7+W9-aware partition status before the single resolution call.
+    ///      Returning the outcome keeps status/reason storage and W6 enforcement shared
+    ///      rather than duplicated by the optimizer at each terminal decision.
     ///
     /// Resolution order:
     ///   a) Confirmed migration present      → Invalid  (W7: VK followed migration protocol)
@@ -843,13 +846,12 @@ contract StorageReceiptDispute {
     ///   d) Partition never proved AND grace period active  → REVERT (W9 guard)
     ///   e) Sector absent from partition     → Valid    (W7: silent eviction detected)
     ///   f) Sector present and proved        → Invalid
-    function _resolveByPartitionStatus(
-        bytes32 disputeId,
+    function _partitionDisputeOutcome(
         address vk,
         bytes32 sectorRoot,
         uint8   deadlineIndex,
         uint8   partitionIndex
-    ) internal {
+    ) internal view returns (DisputeStatus status, string memory reason) {
         // W7 fast path: check confirmed migration before any cross-contract work.
         bytes32 migKey = keccak256(abi.encodePacked(
             vk, sectorRoot, deadlineIndex, partitionIndex
@@ -857,9 +859,7 @@ contract StorageReceiptDispute {
         if (address(fileRegistration) != address(0) &&
             fileRegistration.migrationDeclared(migKey))
         {
-            _resolve(disputeId, DisputeStatus.Invalid,
-                     "sector legitimately migrated to new partition");
-            return;
+            return (DisputeStatus.Invalid, "sector legitimately migrated to new partition");
         }
 
         bytes32 pKey = storageProof.partitionKeyOf(vk, deadlineIndex, partitionIndex);
@@ -869,23 +869,23 @@ contract StorageReceiptDispute {
             storageProof.getPartitionVersionStatus(pKey);
 
         if (pVK == address(0)) {
-            _resolve(disputeId, DisputeStatus.Valid, "partition never registered");
+            return (DisputeStatus.Valid, "partition never registered");
         } else if (!active) {
-            _resolve(disputeId, DisputeStatus.Valid, "partition registered but inactive");
+            return (DisputeStatus.Valid, "partition registered but inactive");
         } else if (contentHash == bytes32(0) || !currentContentProven) {
             // A proof for an older partition version must not protect the current
             // sector set. StorageProofSC resets registeredAt on content changes,
             // so the same first-proof grace window applies to the new version.
             if (block.timestamp < uint256(registeredAt) + uint256(storageProof.proofPeriodSeconds()))
                 revert GracePeriodActive();
-            _resolve(disputeId, DisputeStatus.Valid, "current partition version not proved");
+            return (DisputeStatus.Valid, "current partition version not proved");
         } else if (lastProofRound == 0) {
             // W9: a "never proved" dispute is only valid after the VK has had at least
             // one full proof period from registration.  Reverting (not resolving Invalid)
             // preserves the receipt so the DO can retry once the grace period expires.
             if (block.timestamp < uint256(registeredAt) + uint256(storageProof.proofPeriodSeconds()))
                 revert GracePeriodActive();
-            _resolve(disputeId, DisputeStatus.Valid, "partition registered but never proved");
+            return (DisputeStatus.Valid, "partition registered but never proved");
         } else {
             // W10: partition was proved at least once — but is the proof still current?
             // If more than stalenessThreshold rounds have elapsed since the last proof,
@@ -893,8 +893,7 @@ contract StorageReceiptDispute {
             // before incurring the cost of the W7 sector-roots storage read.
             uint64 curRound = storageProof.currentRound();
             if (curRound > lastProofRound + stalenessThreshold) {
-                _resolve(disputeId, DisputeStatus.Valid, "proof has lapsed");
-                return;
+                return (DisputeStatus.Valid, "proof has lapsed");
             }
 
             // W7: proof is current — verify the sector is still in the partition.
@@ -904,11 +903,9 @@ contract StorageReceiptDispute {
                 if (roots[i] == sectorRoot) { sectorPresent = true; break; }
             }
             if (sectorPresent) {
-                _resolve(disputeId, DisputeStatus.Invalid,
-                         "partition was proved and sector is present");
+                return (DisputeStatus.Invalid, "partition was proved and sector is present");
             } else {
-                _resolve(disputeId, DisputeStatus.Valid,
-                         "sector dropped from partition without migration");
+                return (DisputeStatus.Valid, "sector dropped from partition without migration");
             }
         }
     }

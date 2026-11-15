@@ -397,6 +397,7 @@ contract DataVault is FileTrustDeprecatable {
         bytes[] calldata C2s,
         bytes[] calldata ctSyms
     ) external returns (uint256 batchId, uint256 firstIndex, uint256 count) {
+        _requireNotDeprecated();
         require(fileId != bytes32(0), "DV: empty fileId");
         require(acl.isDataOwner(msg.sender), "DV: not DO");
         require(acl.isFileDataOwner(fileId, msg.sender), "DV: not file DO");

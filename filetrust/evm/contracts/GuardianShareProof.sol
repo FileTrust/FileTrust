@@ -1265,8 +1265,9 @@ contract GuardianShareProof is FileTrustOwnable, ReentrancyGuard {
         _proofRecordMeta[policyId][keyEpoch][msg.sender][proofEpoch] = _packProofMeta(valid);
         if (valid) {
             _epochOutcome[msg.sender][proofEpoch] |= _EPOCH_VALID_PROOF;
+            // Failed attempts retain their record, but never refresh successful custody.
+            lastProofAt[msg.sender] = block.timestamp;
         }
-        lastProofAt[msg.sender] = block.timestamp;
 
         emit ShareProofSubmitted(policyId, keyEpoch, msg.sender, proofEpoch, valid);
 
